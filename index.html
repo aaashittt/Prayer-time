@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#059669">
+    <title>Prayer Times</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            overscroll-behavior: none;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-emerald-50 to-teal-100 min-h-screen">
+    <div id="app"></div>
+
+    <script>
+        // Main App State
+        let state = {
+            currentTime: new Date(),
+            nextPrayer: null,
+            selectedMethod: 'mwl',
+            showMethodMenu: false,
+            prayerTimes: null,
+            location: { name: 'Cape Town, South Africa', lat: -33.9249, lon: 18.4241 },
+            editingLocation: false,
+            locationInput: '',
+            detectingLocation: false
+        };
+
+        const prayers = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+
+        const calculationMethods = {
+            'mwl': { name: 'Muslim World League', fajr: 18, isha: 17 },
+            'isna': { name: 'Islamic Society of North America', fajr: 15, isha: 15 },
+            'egypt': { name: 'Egyptian General Authority', fajr: 19.5, isha: 17.5 },
+            'makkah': { name: 'Umm Al-Qura, Makkah', fajr: 18.5, isha: '90 min' },
+            'karachi': { name: 'University of Islamic Sciences, Karachi', fajr: 18, isha: 18 }
+        };
+
+        // Load saved location
+        function loadSavedLocation() {
+            const saved = localStorage.getItem('prayer-location');
+            if (saved) {
+                state.location = JSON.parse(saved);
+            }
+        }
+
+        function saveLocation(loc) {
+            localStorage.setItem('prayer-location', JSON.stringify(loc));
+        }
+
+        function detectLocation() {
+            state.detectingLocation = true;
+            render();
+            
+            if ('geolocation' in navigator) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const lat = position.coords.latitude;
+                        const lon = position.coords.longitude;
+                        
+                        state.location = {
+                            name: `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`,
+                            lat: lat,
+                            lon: lon
+                        };
+                        
+                        saveLocation(state.location);
+                        state.detectingLocation = false;
+                        calculatePrayerTimes();
+                        render();
+                    },
+                    (error) => {
+                        alert('Could not detect location. Please enable location permissions or enter manually.');
+                        state.detectingLocation = false;
+                        render();
+                    }
+                );
+            } else {
+                alert('Geolocation is not supported by your browser');
+                state.detectingLocation = false;
+                render();
+            }
+        }
+
+        function handleManualLocation() {
+            if (!state.locationInput.trim()) return;
+            
+            const coords = state.locationInput.match(/(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)/);
+            
+            if (coords) {
+                const lat = parseFloat(coords[1]);
+                const lon = parseFloat(coords[2]);
+                
+                state.location = {
+                    name: state.locationInput,
+                    lat: lat,
+                    lon: lon
+                };
+                
+                saveLocation(state.location);
+                state.editingLocation = false;
+                state.locationInput = '';
+                calculatePrayerTimes();
+                render();
+            } else {
+                alert('Please enter coordinates as: latitude, longitude (e.g., -33.9249, 18.4241)');
+            }
+        }
+
+        function calculatePrayerTimes() {
+            const date = new Date();
+            const times = {};
+            
+            // Get timezone offset in hours
+            const tzOffset = -date.getTimezoneOffset() / 60;
+            
+            // Julian date
+            const jd = Math.floor((date.getTime() / 86400000) + 2440587.5);
+            
+            // Days since 2000
+            const n = jd - 2451545.0;
+            
+            // Mean solar noon
+            const J = n - state.location.lon / 360;
+            
+            // Solar mean anomaly
+            const M = (357.5291 + 0.98560028 * J) % 360;
+            const Mrad = M * Math.PI / 180;
+            
+            // Equation of center
+            const C = 1.9148 * Math.sin(Mrad) + 0.02 * Math.sin(2 * Mrad) + 0.0003 * Math.sin(3 * Mrad);
+            
+            // Ecliptic longitude
+            const lambda = (M + C + 180 + 102.9372) % 360;
+            const lambdaRad = lambda * Math.PI / 180;
+            
+            // Solar transit
+            const Jtransit = 2451545.0 + J + 0.0053 * Math.sin(Mrad) - 0.0069 * Math.sin(2 * lambdaRad);
+            
+            // Declination of sun
+            const delta = Math.asin(Math.sin(lambdaRad) * Math.sin(23.44 * Math.PI / 180));
+            
+            // Hour angle function
+            const getHourAngle = (angle) => {
+                const latRad = state.location.lat * Math.PI / 180;
+                const angleRad = angle * Math.PI / 180;
+                const cosH = (Math.sin(angleRad) - Math.sin(latRad) * Math.sin(delta)) / (Math.cos(latRad) * Math.cos(delta));
+                if (cosH > 1 || cosH < -1) return 0;
+                return Math.acos(cosH) * 180 / Math.PI;
+            };
+            
+            // Calculate Dhuhr (solar noon)
+            const dhuhrJd = Jtransit - 2451545.0;
+            const dhuhrTime = (dhuhrJd - Math.floor(dhuhrJd)) * 24 + tzOffset;
+            
+            // Fajr
+            const fajrAngle = calculationMethods[state.selectedMethod].fajr;
+            const fajrHA = getHourAngle(-fajrAngle) / 15;
+            const fajrTime = dhuhrTime - fajrHA;
+            
+            // Maghrib (Sunset)
+            const maghribHA = getHourAngle(-0.833) / 15;
+            const maghribTime = dhuhrTime + maghribHA;
+            
+            // Isha
+            let ishaTime;
+            if (state.selectedMethod === 'makkah') {
+                ishaTime = maghribTime + 1.5; // 90 minutes after Maghrib
+            } else {
+                const ishaAngle = calculationMethods[state.selectedMethod].isha;
+                const ishaHA = getHourAngle(-ishaAngle) / 15;
+                ishaTime = dhuhrTime + ishaHA;
+            }
+            
+            // Asr (Shafi: shadow = object length)
+            const asrAltitude = Math.atan(1 / (1 + Math.tan(Math.abs(state.location.lat * Math.PI / 180 - delta))));
+            const asrAngle = (90 - asrAltitude * 180 / Math.PI);
+            const asrHA = getHourAngle(asrAngle) / 15;
+            const asrTime = dhuhrTime + asrHA;
+            
+            times.Fajr = formatTimeString(fajrTime);
+            times.Dhuhr = formatTimeString(dhuhrTime);
+            times.Asr = formatTimeString(asrTime);
+            times.Maghrib = formatTimeString(maghribTime);
+            times.Isha = formatTimeString(ishaTime);
+            
+            state.prayerTimes = times;
+        }
+
+        function formatTimeString(time) {
+            while (time < 0) time += 24;
+            while (time >= 24) time -= 24;
+            
+            const hours = Math.floor(time);
+            const minutes = Math.round((time - hours) * 60);
+            
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+        }
+
+        function calculateNextPrayer() {
+            if (!state.prayerTimes) return;
+
+            const now = state.currentTime;
+            const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+            for (let prayer of prayers) {
+                const [hours, minutes] = state.prayerTimes[prayer].split(':');
+                const prayerMinutes = parseInt(hours) * 60 + parseInt(minutes);
+                
+                if (prayerMinutes > currentMinutes) {
+                    const diff = prayerMinutes - currentMinutes;
+                    state.nextPrayer = {
+                        name: prayer,
+                        time: state.prayerTimes[prayer],
+                        hoursLeft: Math.floor(diff / 60),
+                        minutesLeft: diff % 60
+                    };
+                    return;
+                }
+            }
+
+            const [hours, minutes] = state.prayerTimes['Fajr'].split(':');
+            const fajrMinutes = parseInt(hours) * 60 + parseInt(minutes);
+            const diff = (24 * 60 - currentMinutes) + fajrMinutes;
+            state.nextPrayer = {
+                name: 'Fajr',
+                time: state.prayerTimes['Fajr'],
+                hoursLeft: Math.floor(diff / 60),
+                minutesLeft: diff % 60
+            };
+        }
+
+        function formatTime(time) {
+            if (!time) return '';
+            const [hours, minutes] = time.split(':');
+            const hour = parseInt(hours);
+            const ampm = hour >= 12 ? 'PM' : 'AM';
+            const displayHour = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
+            return `${displayHour}:${minutes} ${ampm}`;
+        }
+
+        function render() {
+            const app = document.getElementById('app');
+            
+            if (!state.prayerTimes) {
+                app.innerHTML = `
+                    <div class="min-h-screen flex items-center justify-center">
+                        <div class="text-emerald-700 text-xl">Calculating prayer times...</div>
+                    </div>
+                `;
+                return;
+            }
+
+            app.innerHTML = `
+                <div class="max-w-2xl mx-auto p-4">
+                    <div class="text-center mb-8 pt-8">
+                        <h1 class="text-4xl font-bold text-emerald-800 mb-2">Prayer Times</h1>
+                        
+                        <div class="flex items-center justify-center text-emerald-600 gap-2 mb-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                            ${state.editingLocation ? `
+                                <input type="text" id="locationInput" value="${state.locationInput}" placeholder="lat, lon (e.g. -33.9249, 18.4241)" class="px-3 py-1 rounded border border-emerald-300 text-sm w-64">
+                                <button onclick="handleManualLocation()" class="text-emerald-700 hover:text-emerald-800 font-bold">Save</button>
+                                <button onclick="state.editingLocation = false; render();" class="text-gray-500 hover:text-gray-700">Cancel</button>
+                            ` : `
+                                <span>${state.location.name}</span>
+                                <button onclick="state.editingLocation = true; state.locationInput = ''; render();" class="text-emerald-500 hover:text-emerald-700 text-sm ml-2">✏️ Edit</button>
+                            `}
+                        </div>
+                        
+                        <button onclick="detectLocation()" ${state.detectingLocation ? 'disabled' : ''} class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 mb-3 disabled:opacity-50 transition-colors">
+                            📍 ${state.detectingLocation ? 'Detecting...' : 'Auto-Detect My Location'}
+                        </button>
+                        
+                        <div class="text-emerald-700 mt-2 text-lg">
+                            ${state.currentTime.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                        </div>
+                        
+                        <div class="mt-4 relative inline-block">
+                            <button onclick="state.showMethodMenu = !state.showMethodMenu; render();" class="bg-white text-emerald-700 px-4 py-2 rounded-lg shadow hover:shadow-md transition-shadow">
+                                ⚙️ ${calculationMethods[state.selectedMethod].name}
+                                <span class="ml-2">${state.showMethodMenu ? '▲' : '▼'}</span>
+                            </button>
+                            
+                            ${state.showMethodMenu ? `
+                                <div class="absolute top-full mt-2 left-1/2 transform -translate-x-1/2 bg-white rounded-lg shadow-xl border z-10 w-96 max-h-80 overflow-y-auto">
+                                    ${Object.keys(calculationMethods).map(key => `
+                                        <button onclick="state.selectedMethod = '${key}'; state.showMethodMenu = false; calculatePrayerTimes(); render();" 
+                                            class="w-full text-left px-4 py-3 hover:bg-emerald-50 text-sm border-b transition-colors ${state.selectedMethod === key ? 'bg-emerald-100 font-semibold text-emerald-700' : 'text-gray-700'}">
+                                            ${calculationMethods[key].name}
+                                        </button>
+                                    `).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-2xl shadow-lg p-6 mb-6">
+                        <div class="flex items-center justify-center gap-3">
+                            <svg class="w-8 h-8 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <polyline points="12 6 12 12 16 14"></polyline>
+                            </svg>
+                            <div class="text-5xl font-bold text-emerald-800">
+                                ${state.currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                            </div>
+                        </div>
+                    </div>
+
+                    ${state.nextPrayer ? `
+                        <div class="bg-gradient-to-r from-emerald-600 to-teal-600 rounded-2xl shadow-lg p-6 mb-6 text-white">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="text-2xl">🔔</span>
+                                <h2 class="text-xl font-semibold">Next Prayer</h2>
+                            </div>
+                            <div class="text-4xl font-bold mb-2">${state.nextPrayer.name}</div>
+                            <div class="text-2xl mb-2">${formatTime(state.nextPrayer.time)}</div>
+                            <div class="text-lg opacity-90">in ${state.nextPrayer.hoursLeft}h ${state.nextPrayer.minutesLeft}m</div>
+                        </div>
+                    ` : ''}
+
+                    <div class="bg-white rounded-2xl shadow-lg overflow-hidden mb-6">
+                        ${prayers.map((prayer, index) => {
+                            const isNext = state.nextPrayer && state.nextPrayer.name === prayer;
+                            return `
+                                <div class="flex justify-between items-center p-5 ${index !== prayers.length - 1 ? 'border-b border-gray-200' : ''} ${isNext ? 'bg-emerald-50' : ''}">
+                                    <div class="flex items-center gap-3">
+                                        <div class="w-12 h-12 rounded-full flex items-center justify-center ${isNext ? 'bg-emerald-600 text-white' : 'bg-emerald-100 text-emerald-700'}">
+                                            <span class="font-semibold text-xl">${prayer[0]}</span>
+                                        </div>
+                                        <div class="font-semibold text-lg ${isNext ? 'text-emerald-700' : 'text-gray-800'}">${prayer}</div>
+                                    </div>
+                                    <div class="text-2xl font-bold ${isNext ? 'text-emerald-700' : 'text-gray-700'}">${formatTime(state.prayerTimes[prayer])}</div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+
+                    <div class="text-center text-emerald-600 text-sm pb-8">
+                        <p class="mb-1">✨ Times calculated astronomically for your location</p>
+                        <p class="text-xs opacity-75">📍 Coordinates: ${state.location.lat.toFixed(4)}°, ${state.location.lon.toFixed(4)}°</p>
+                        <p class="text-xs opacity-75 mt-2">💾 Your location is saved automatically</p>
+                        <p class="text-xs opacity-75">🔄 Times update daily at midnight</p>
+                    </div>
+                </div>
+            `;
+
+            if (state.editingLocation) {
+                const input = document.getElementById('locationInput');
+                if (input) {
+                    input.focus();
+                    input.addEventListener('input', (e) => {
+                        state.locationInput = e.target.value;
+                    });
+                    input.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter') {
+                            handleManualLocation();
+                        }
+                    });
+                }
+            }
+        }
+
+        // Initialize
+        loadSavedLocation();
+        calculatePrayerTimes();
+        render();
+
+        // Update clock every second
+        setInterval(() => {
+            state.currentTime = new Date();
+            calculateNextPrayer();
+            render();
+        }, 1000);
+
+        // Recalculate at midnight
+        const now = new Date();
+        const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+        const timeUntilMidnight = tomorrow - now;
+        setTimeout(() => {
+            calculatePrayerTimes();
+            render();
+            setInterval(() => {
+                calculatePrayerTimes();
+                render();
+            }, 24 * 60 * 60 * 1000);
+        }, timeUntilMidnight);
+    </script>
+</body>
+</html>
